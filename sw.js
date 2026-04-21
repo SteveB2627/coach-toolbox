@@ -1,7 +1,7 @@
 // Coach's Toolbox — Service Worker
 // Caches the app shell so it works fully offline (e.g. at the pool)
 
-const CACHE_NAME = "coaches-toolbox-v4";
+const CACHE_NAME = "coaches-toolbox-v5";
 
 // Everything needed to run the app offline
 const ASSETS = [

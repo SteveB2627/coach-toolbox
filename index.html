@@ -192,6 +192,7 @@ const shareOrCopy = async (text, title="Result") => {
 // ─── Tool registry ────────────────────────────────────────────────────────────
 const TOOLS = [
   { id:"css",      name:"CSS Timer",       subtitle:"Critical Swim Speed test",    icon:"🏊", color:th.accent },
+  { id:"tt",       name:"Time Trial",      subtitle:"Staggered start TT timer",    icon:"⏱", color:th.purple },
   { id:"pace",     name:"Pace Calculator", subtitle:"Swim / bike / run paces",     icon:"📐", color:th.gold   },
   { id:"interval", name:"Interval Timer",  subtitle:"Work / rest session builder", icon:"🕐", color:th.green  },
   { id:"brick",    name:"Brick Logger",    subtitle:"T1 / T2 transition times",    icon:"🚴", color:th.orange },
@@ -210,13 +211,14 @@ function AthletesScreen({ onBack, store }) {
   const [editName, setEditName] = useState("");
   const [editGroup, setEditGroup]= useState("");
 
-  const TOOL_LABELS = { css:"CSS Timer", brick:"Brick Logger", pace:"Pace Calculator", interval:"Interval Timer" };
-  const TOOL_COLORS = { css:th.accent,   brick:th.orange,       pace:th.gold,           interval:th.green };
+  const TOOL_LABELS = { css:"CSS Timer", brick:"Brick Logger", pace:"Pace Calculator", interval:"Interval Timer", tt:"Time Trial" };
+  const TOOL_COLORS = { css:th.accent,   brick:th.orange,       pace:th.gold,           interval:th.green,         tt:th.purple };
 
   const formatResult = (entry) => {
     const d = entry.data;
-    if (entry.tool==="css") return `400m: ${fmtMs(d.t400)} · 200m: ${fmtMs(d.t200)}${d.css?" · CSS: "+d.css:""}`;
+    if (entry.tool==="css")   return `400m: ${fmtMs(d.t400)} · 200m: ${fmtMs(d.t200)}${d.css?" · CSS: "+d.css:""}`;
     if (entry.tool==="brick") return `T1: ${fmtMs(d.t1)} · T2: ${fmtMs(d.t2)}${d.t1&&d.t2?" · Total: "+fmtMs(d.t1+d.t2):""}`;
+    if (entry.tool==="tt")    return `${d.disc?d.disc.charAt(0).toUpperCase()+d.disc.slice(1):""} ${d.dist||""}${d.unit||""} · ${fmtMs(d.timeMs)}${d.pace?" · "+d.pace:""}`;
     return JSON.stringify(d);
   };
 
@@ -858,6 +860,315 @@ function BrickLogger({ onBack, store }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOOL 5 — TIME TRIAL
+// ═══════════════════════════════════════════════════════════════════════════════
+const TT_DISCIPLINES = [
+  { id:"run",  label:"Run",  icon:"🏃", units:["km","mi"],  paceUnit:"/km",   paceUnit2:"/mi",   distDef:"5"  },
+  { id:"bike", label:"Bike", icon:"🚴", units:["km","mi"],  paceUnit:"km/h",  paceUnit2:"mph",   distDef:"40" },
+  { id:"swim", label:"Swim", icon:"🏊", units:["m","yd"],   paceUnit:"/100m", paceUnit2:"/100y", distDef:"400"},
+];
+
+function calcTTPace(disc, distVal, distUnit, timeMs) {
+  if (!timeMs || !distVal) return null;
+  const dist = parseFloat(distVal);
+  if (!dist || dist <= 0) return null;
+  const secs = timeMs / 1000;
+
+  if (disc === "bike") {
+    // speed in selected unit
+    const hrs = secs / 3600;
+    const speed = dist / hrs;
+    return `${speed.toFixed(1)} ${distUnit === 0 ? "km/h" : "mph"}`;
+  } else if (disc === "swim") {
+    // pace per 100m or 100yd
+    const per100 = secs / (dist / 100);
+    return `${fmtSec(per100)} /${distUnit === 0 ? "100m" : "100yd"}`;
+  } else {
+    // run pace per km or mile
+    const perUnit = secs / dist;
+    return `${fmtSec(perUnit)} /${distUnit === 0 ? "km" : "mi"}`;
+  }
+}
+
+function TimeTrial({ onBack, store }) {
+  const { athletes, addAthlete, saveResult } = store;
+
+  const [phase, setPhase]     = useState("setup");
+  const [disc, setDisc]       = useState("run");
+  const [distVal, setDistVal] = useState("5");
+  const [distUnit, setDistUnit] = useState(0); // index into units array
+  const [rows, setRows]       = useState([{ uid:uid(), athlete:{id:null,name:""} }]);
+  const [timing, setTiming]   = useState({}); // uid -> { startAt, finishAt }
+  const [saved, setSaved]     = useState({});
+
+  const wallRef = useRef(null), ticker = useRef(null);
+  const [now, setNow] = useState(null);
+  const elapsed = () => now && wallRef.current ? now - wallRef.current : 0;
+
+  const d = TT_DISCIPLINES.find(x => x.id === disc);
+
+  const addRow    = () => setRows(p => [...p, { uid:uid(), athlete:{id:null,name:""} }]);
+  const removeRow = u  => setRows(p => p.filter(r => r.uid !== u));
+  const setAth    = (u,a) => setRows(p => p.map(r => r.uid===u ? {...r, athlete:a} : r));
+
+  const startSession = () => {
+    wallRef.current = performance.now();
+    ticker.current  = setInterval(() => setNow(performance.now()), 50);
+    setPhase("racing");
+  };
+  const endSession = () => { clearInterval(ticker.current); setPhase("results"); };
+  const reset = () => {
+    clearInterval(ticker.current);
+    setRows([{uid:uid(),athlete:{id:null,name:""}}]);
+    setTiming({}); setSaved({}); setNow(null); wallRef.current = null;
+    setPhase("setup");
+  };
+
+  const mark = (u, key) => setTiming(p => ({ ...p, [u]: { ...(p[u]||{}), [key]: elapsed() } }));
+
+  const getTime = u => {
+    const t = timing[u] || {};
+    return t.startAt!=null && t.finishAt!=null ? t.finishAt - t.startAt : null;
+  };
+
+  const ready = rows.length > 0 && rows.every(r => r.athlete?.name?.trim()) && parseFloat(distVal) > 0;
+
+  const aBtn = (fg, bg, solid) => ({
+    padding:"9px 18px", background:solid?fg:bg, color:solid?th.bg:fg,
+    border:`1px solid ${fg}`, borderRadius:8, fontSize:13, fontWeight:700,
+    fontFamily:"inherit", cursor:"pointer", flexShrink:0,
+  });
+
+  const doSave = r => {
+    const timeMs = getTime(r.uid);
+    const pace   = calcTTPace(disc, distVal, distUnit, timeMs);
+    let aId = r.athlete.id;
+    if (!aId && r.athlete.name?.trim()) { const c = addAthlete(r.athlete.name); aId = c.id; }
+    if (aId) saveResult(aId, "tt", { disc, dist:distVal, unit:d.units[distUnit], timeMs, pace });
+    setSaved(p => ({...p, [r.uid]:true}));
+  };
+
+  const doShare = r => {
+    const timeMs = getTime(r.uid);
+    const pace   = calcTTPace(disc, distVal, distUnit, timeMs);
+    const lines  = [
+      `${d.icon} Time Trial — ${r.athlete.name}`,
+      `${disc.charAt(0).toUpperCase()+disc.slice(1)} ${distVal}${d.units[distUnit]}`,
+      `Time: ${fmtMs(timeMs)}`,
+      pace ? `Pace: ${pace}` : "",
+      "",
+      "Coach's Toolbox · tools.stevebarbour.com",
+    ].filter(l => l !== undefined);
+    shareOrCopy(lines.join("\n"), `${r.athlete.name} TT Result`);
+  };
+
+  // ── SETUP ─────────────────────────────────────────────────────────────────
+  if (phase === "setup") return (
+    <div style={S.page}>
+      <button onClick={onBack} style={S.backBtn}>← Toolbox</button>
+      <div style={S.head(th.purple)}>Coach's Toolbox</div>
+      <div style={S.title}>Time Trial</div>
+      <div style={{...S.sub, marginBottom:24}}>Staggered starts, independent timing per athlete</div>
+
+      {/* Discipline picker */}
+      <div style={{...S.lbl(), marginBottom:8}}>Discipline</div>
+      <div style={{display:"flex", gap:8, marginBottom:20}}>
+        {TT_DISCIPLINES.map(di => (
+          <button key={di.id} onClick={() => { setDisc(di.id); setDistVal(di.distDef); setDistUnit(0); }}
+            style={{flex:1, padding:"10px 0", fontFamily:"inherit", fontSize:12, fontWeight:700,
+              cursor:"pointer", borderRadius:10,
+              background: disc===di.id ? th.purple : "none",
+              color: disc===di.id ? th.bg : th.muted,
+              border: disc===di.id ? "none" : `1px solid ${th.border}`,
+            }}>
+            {di.icon} {di.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Distance */}
+      <div style={{...S.lbl(), marginBottom:8}}>Distance</div>
+      <div style={{display:"flex", gap:8, marginBottom:20}}>
+        <input type="number" value={distVal} onChange={e => setDistVal(e.target.value)}
+          placeholder={d.distDef} style={{...S.input, maxWidth:110}}/>
+        <select value={distUnit} onChange={e => setDistUnit(+e.target.value)}
+          style={{...S.input, flex:"none", width:80}}>
+          {d.units.map((u,i) => <option key={u} value={i}>{u}</option>)}
+        </select>
+      </div>
+
+      {/* Athletes */}
+      <div style={{...S.lbl(), marginBottom:8}}>Athletes</div>
+      {rows.map(r => (
+        <div key={r.uid} style={{display:"flex", gap:8, marginBottom:8, alignItems:"center"}}>
+          <AthletePicker athletes={athletes} value={r.athlete} onChange={a => setAth(r.uid, a)} placeholder="Athlete name"/>
+          {rows.length > 1 && (
+            <button onClick={() => removeRow(r.uid)} style={{background:"none",border:"none",color:th.red,fontSize:20,cursor:"pointer",padding:"0 4px",fontFamily:"inherit"}}>×</button>
+          )}
+        </div>
+      ))}
+      <button onClick={addRow} style={{...S.ghostBtn, marginBottom:20}}>+ Add Athlete</button>
+      <button onClick={startSession} disabled={!ready}
+        style={{...S.primaryBtn(th.purple, th.bg), opacity:ready?1:0.4}}>
+        Start Session
+      </button>
+    </div>
+  );
+
+  // ── RACING ────────────────────────────────────────────────────────────────
+  if (phase === "racing") {
+    const allDone = rows.every(r => getTime(r.uid) != null);
+    return (
+      <div style={S.page}>
+        <div style={{textAlign:"center", marginBottom:20}}>
+          <div style={S.head(th.purple)}>
+            {d.icon} {disc.charAt(0).toUpperCase()+disc.slice(1)} {distVal}{d.units[distUnit]} Time Trial
+          </div>
+          <div style={{fontSize:44, fontVariantNumeric:"tabular-nums", color:th.purple, fontWeight:800, lineHeight:1}}>
+            {fmtMs(elapsed())}
+          </div>
+        </div>
+
+        {rows.map(r => {
+          const t    = timing[r.uid] || {};
+          const done = getTime(r.uid) != null;
+          const ph   = !t.startAt ? "start" : !t.finishAt ? "running" : "done";
+
+          return (
+            <div key={r.uid} style={S.card(done, th.purple)}>
+              <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10}}>
+                <span style={{fontWeight:700, fontSize:15}}>{r.athlete.name}</span>
+                {done && <span style={{fontSize:10, color:th.purple, letterSpacing:2, fontWeight:700}}>DONE ✓</span>}
+              </div>
+
+              <div style={{display:"flex", alignItems:"center", gap:10, flexWrap:"wrap"}}>
+                {ph === "start" && (
+                  <button onClick={() => mark(r.uid, "startAt")} style={aBtn(th.purple, th.purpleDim, false)}>
+                    ▶ START
+                  </button>
+                )}
+                {ph === "running" && (
+                  <>
+                    <button onClick={() => mark(r.uid, "finishAt")} style={aBtn(th.purple, th.purpleDim, true)}>
+                      ■ FINISH
+                    </button>
+                    <span style={{fontSize:20, fontVariantNumeric:"tabular-nums", color:th.purple, fontWeight:800, letterSpacing:1}}>
+                      {fmtMs(elapsed() - t.startAt)}
+                    </span>
+                  </>
+                )}
+                {ph === "done" && (
+                  <span style={{fontSize:18, fontVariantNumeric:"tabular-nums", color:th.purple, fontWeight:700}}>
+                    {fmtMs(getTime(r.uid))}
+                    {calcTTPace(disc, distVal, distUnit, getTime(r.uid)) &&
+                      <span style={{fontSize:12, color:th.muted, fontWeight:500, marginLeft:8}}>
+                        {calcTTPace(disc, distVal, distUnit, getTime(r.uid))}
+                      </span>
+                    }
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        <button onClick={endSession}
+          style={{...S.primaryBtn(th.surfaceAlt, th.purple), border:`1px solid ${th.purple}`, marginTop:8}}>
+          {allDone ? "View Results" : "End Session Early"}
+        </button>
+      </div>
+    );
+  }
+
+  // ── RESULTS ───────────────────────────────────────────────────────────────
+  const ranked = [...rows]
+    .map(r => ({ ...r, timeMs: getTime(r.uid) }))
+    .sort((a,b) => {
+      if (a.timeMs == null && b.timeMs == null) return 0;
+      if (a.timeMs == null) return 1;
+      if (b.timeMs == null) return -1;
+      return a.timeMs - b.timeMs;
+    });
+
+  return (
+    <div style={S.page}>
+      <div style={S.head(th.purple)}>Results</div>
+      <div style={{...S.title, marginBottom:4}}>Time Trial</div>
+      <div style={{fontSize:12, color:th.muted, marginBottom:20}}>
+        {d.icon} {disc.charAt(0).toUpperCase()+disc.slice(1)} · {distVal}{d.units[distUnit]}
+      </div>
+
+      {ranked.map((r, i) => {
+        const pace = calcTTPace(disc, distVal, distUnit, r.timeMs);
+        const isFirst = i === 0 && r.timeMs != null;
+        return (
+          <div key={r.uid} style={{
+            background: th.surface,
+            border: `1px solid ${isFirst ? th.gold : th.border}`,
+            borderRadius:12, padding:"14px 16px", marginBottom:10,
+          }}>
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10}}>
+              <div style={{display:"flex", alignItems:"center", gap:10}}>
+                <div style={{
+                  width:26, height:26, borderRadius:8,
+                  background: isFirst ? th.gold : th.surfaceAlt,
+                  color: isFirst ? th.bg : th.muted,
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  fontSize:12, fontWeight:800,
+                }}>
+                  {i+1}
+                </div>
+                <span style={{fontWeight:700, fontSize:16}}>{r.athlete.name}</span>
+                {isFirst && <span style={{fontSize:10, color:th.gold, fontWeight:700, letterSpacing:1}}>FASTEST</span>}
+              </div>
+            </div>
+
+            <div style={{display:"flex", gap:8, flexWrap:"wrap", marginBottom:12}}>
+              <div style={S.splitBox}>
+                <div style={S.lbl(th.purple)}>Time</div>
+                <div style={{fontVariantNumeric:"tabular-nums", fontSize:18, fontWeight:700, color:th.purple}}>
+                  {r.timeMs != null ? fmtMs(r.timeMs) : "—"}
+                </div>
+              </div>
+              {pace && (
+                <div style={{...S.splitBox, borderColor:th.purple}}>
+                  <div style={S.lbl(th.purple)}>Pace / Speed</div>
+                  <div style={{fontVariantNumeric:"tabular-nums", fontSize:15, fontWeight:600}}>{pace}</div>
+                </div>
+              )}
+              {i > 0 && ranked[0].timeMs != null && r.timeMs != null && (
+                <div style={S.splitBox}>
+                  <div style={S.lbl(th.muted)}>Gap</div>
+                  <div style={{fontVariantNumeric:"tabular-nums", fontSize:15, fontWeight:600, color:th.muted}}>
+                    +{fmtMs(r.timeMs - ranked[0].timeMs)}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{display:"flex", gap:8}}>
+              <button onClick={() => doSave(r)} disabled={saved[r.uid]}
+                style={{...S.outlineBtn(saved[r.uid] ? th.green : th.purple), flex:1, fontSize:12, padding:"8px 10px"}}>
+                {saved[r.uid] ? "✓ Saved" : "💾 Save to profile"}
+              </button>
+              <button onClick={() => doShare(r)}
+                style={{...S.outlineBtn(th.muted), flex:1, fontSize:12, padding:"8px 10px"}}>
+                ↗ Share
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{display:"flex", gap:8, marginTop:20}}>
+        <button onClick={reset}  style={{...S.outlineBtn(th.purple), flex:1}}>↩ New Session</button>
+        <button onClick={onBack} style={{...S.outlineBtn(th.muted),  flex:1}}>⌂ Toolbox</button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Root ─────────────────────────────────────────────────────────────────────
 function App() {
   const store = useAthletes();
@@ -874,6 +1185,7 @@ function App() {
 
   if (screen==="athletes")      return <AthletesScreen  onBack={back} store={store}/>;
   if (screen==="tool:css")      return <CSSTimer         onBack={back} store={store}/>;
+  if (screen==="tool:tt")       return <TimeTrial        onBack={back} store={store}/>;
   if (screen==="tool:pace")     return <PaceCalculator   onBack={back}/>;
   if (screen==="tool:interval") return <IntervalTimer    onBack={back}/>;
   if (screen==="tool:brick")    return <BrickLogger      onBack={back} store={store}/>;
