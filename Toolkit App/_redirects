@@ -1,8 +1,0 @@
-# Static assets — serve directly, do not redirect
-/icon-192.png    /icon-192.png    200
-/icon-512.png    /icon-512.png    200
-/manifest.json   /manifest.json   200
-/sw.js           /sw.js           200
-
-# Everything else → app shell (single-page app)
-/*               /index.html      200
