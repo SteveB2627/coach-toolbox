@@ -21,6 +21,8 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body, #root { height: 100%; background: #080d1a; -webkit-tap-highlight-color: transparent; -webkit-font-smoothing: antialiased; }
     body { overscroll-behavior: none; }
+    /* Push all page content below the iOS status bar when running as a home screen app */
+    #root { padding-top: env(safe-area-inset-top); }
     select option { background: #0f1623; color: #e2e8f0; }
     input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
     input[type=number] { -moz-appearance: textfield; }
@@ -54,7 +56,7 @@ const th = {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const S = {
-  page: { minHeight:"100dvh", background:th.bg, color:th.text, fontFamily:th.font, padding:"1rem 1.25rem 3rem", maxWidth:520, margin:"0 auto" },
+  page: { minHeight:"100dvh", background:th.bg, color:th.text, fontFamily:th.font, padding:"0.75rem 1.25rem 3rem", maxWidth:520, margin:"0 auto" },
   input: { flex:1, background:th.surface, border:`1px solid ${th.border}`, borderRadius:8, color:th.text, padding:"10px 12px", fontSize:15, fontFamily:"inherit", fontWeight:500, outline:"none", WebkitAppearance:"none" },
   primaryBtn: (bg=th.accent, fg=th.bg) => ({ width:"100%", padding:"14px", background:bg, color:fg, border:"none", borderRadius:10, fontSize:15, fontWeight:700, fontFamily:"inherit", cursor:"pointer" }),
   outlineBtn: (color=th.accent) => ({ padding:"10px 16px", background:"none", color, border:`1px solid ${color}`, borderRadius:8, fontSize:13, fontWeight:600, fontFamily:"inherit", cursor:"pointer" }),
